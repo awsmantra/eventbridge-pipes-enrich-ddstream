@@ -1,0 +1,42 @@
+{
+  "Employee": [
+    {
+      "PutRequest": {
+        "Item": {
+          "PK": {
+            "S": "Heather"
+          },
+          "SK": {
+            "S": "Gosling"
+          },
+          "Contact": {
+            "M": {
+              "Home": {
+                "S": "12345 Limestone Ln"
+              },
+              "Phone": {
+                "S": "1233456890"
+              }
+            }
+          },
+          "Skills": {
+            "L": [
+              {
+                "S": "AWS"
+              },
+              {
+                "S": "Golang"
+              },
+              {
+                "S": "Java"
+              },
+              {
+                "S": "TypeScript"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

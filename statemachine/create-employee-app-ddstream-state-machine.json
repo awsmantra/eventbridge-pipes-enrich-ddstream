@@ -1,0 +1,40 @@
+{
+  "Comment": "A description of my state machine",
+  "StartAt": "DynamoDB Map",
+  "States": {
+    "DynamoDB Map": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "Transform",
+        "States": {
+          "Transform": {
+            "Type": "Pass",
+            "Parameters": {
+              "details": {
+                "meta-data": {
+                  "correlationId.$": "$.eventID",
+                  "eventName.$": "$.eventName"
+                },
+                "data": {
+                  "PK.$": "$.dynamodb.Keys.PK.S",
+                  "SK.$": "$.dynamodb.Keys.SK.S",
+                  "Skills.$": "$.dynamodb.NewImage.Skills.L[*].S",
+                  "Contact": {
+                    "Home.$": "$.dynamodb.NewImage.Contact.M.Home.S",
+                    "Phone.$": "$.dynamodb.NewImage.Contact.M.Phone.S"
+                  }
+                }
+              }
+            },
+            "InputPath": "$",
+            "End": true
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}

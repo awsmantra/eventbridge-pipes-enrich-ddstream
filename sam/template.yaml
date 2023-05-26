@@ -1,0 +1,266 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: 
+  EventBridge Pipes Enrich DynamoDB Stream
+
+Resources:
+##########################################################################
+#  Dynamo DB tables                                                      #
+##########################################################################
+
+# Create table with KMS key. Avoid any charges, I haven't included here
+  EmployeeTable:
+    Type: "AWS::DynamoDB::Table"
+    DeletionPolicy: Delete
+    Properties:
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      TableName: Employee
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  ##########################################################################
+  #  Employee Event Bus                                                     #
+  ##########################################################################
+
+  EmployeeEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: EmployeeEventBus
+  EmployeeLogsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref EmployeeEventBus
+      EventPattern:
+        source:
+          - 'employee-app'
+        account:
+          - !Ref AWS::AccountId
+      Targets:
+        - Arn: !GetAtt EmployeeLogGroupEvents.Arn
+          Id: LogTarget
+  EmployeeLogGroupEvents:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/events/employee-app
+
+  EmployeeLogGroupEventsPolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: EventBridgeToCloudWatch
+      PolicyDocument: !Sub >
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "LogStreamPolicy",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "events.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "logs:CreateLogStream"
+              ],
+              "Resource": [
+                "${EmployeeLogGroupEvents.Arn}"
+              ]
+            },
+            {
+              "Sid": "LogEventPolicy",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "events.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "logs:PutLogEvents"
+              ],
+              "Resource": [
+                "${EmployeeLogGroupEvents.Arn}"
+              ],
+              "Condition": {
+                "ArnEquals": {"AWS:SourceArn": "${EmployeeLogsRule.Arn}"}
+              }
+            }
+          ]
+        }
+
+
+  ##########################################################################
+  #  IAM Roles and Permission                                              #
+  ##########################################################################
+  EmployeeStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - !Sub states.${AWS::Region}.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: WriteCloudWatchLogs
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:CreateLogDelivery'
+                  - 'logs:GetLogDelivery'
+                  - 'logs:UpdateLogDelivery'
+                  - 'logs:DeleteLogDelivery'
+                  - 'logs:ListLogDeliveries'
+                  - 'logs:PutResourcePolicy'
+                  - 'logs:DescribeResourcePolicies'
+                  - 'logs:DescribeLogGroups'
+                Resource: '*'
+
+
+  EmployeePipeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - !Sub states.${AWS::Region}.amazonaws.com
+                - pipes.amazonaws.com
+                - delivery.logs.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: WriteCloudWatchLogs
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:CreateLogDelivery'
+                  - 'logs:GetLogDelivery'
+                  - 'logs:UpdateLogDelivery'
+                  - 'logs:DeleteLogDelivery'
+                  - 'logs:ListLogDeliveries'
+                  - 'logs:PutResourcePolicy'
+                  - 'logs:DescribeResourcePolicies'
+                  - 'logs:DescribeLogGroups'
+                Resource: '*'
+        - PolicyName: DynamoDBStreamAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:DescribeStream'
+                  - 'dynamodb:GetRecords'
+                  - 'dynamodb:GetShardIterator'
+                  - 'dynamodb:ListStreams'
+                Resource: !GetAtt EmployeeTable.StreamArn
+        - PolicyName: EventBusAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'events:PutEvents'
+                Resource: !GetAtt EmployeeEventBus.Arn
+        - PolicyName: PipeEnrichmentPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                  - 'states:StartSyncExecution'
+                  - 'states:ListExecutions'
+                  - 'states:GetExecutionHistory'
+                Resource: !GetAtt EmployeeAppStateMachine.Arn
+        - PolicyName: AmazonSQSFullAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:*'
+                Resource: '*'
+
+  ##########################################################################
+  #  State Machine                                                         #
+  ##########################################################################
+  EmployeeAppStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub  /aws/vendedlogs/states/${AWS::StackName}
+      RetentionInDays: 1
+
+  EmployeeAppStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: EXPRESS
+      Name: employee-app-state-machine
+      DefinitionUri: ../statemachine/create-employee-app-ddstream-state-machine.json
+      Role: !GetAtt EmployeeStateMachineRole.Arn
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt EmployeeAppStateMachineLogGroup.Arn
+        IncludeExecutionData: True
+        Level: ALL
+
+  ##########################################################################
+  #  EventBridge Pipes                                                     #
+  ##########################################################################
+  EmployeePipeDLQueue:
+    Type: AWS::SQS::Queue
+    Properties :
+      QueueName: "employee-app-dlq"
+
+  EmployeePipe:
+    Type: AWS::Pipes::Pipe
+    Properties:
+      Name: eventbridge-pipes-enrich-ddstream
+      Description: "EventBridge Pipes Enrich DynamoDB Stream"
+      RoleArn: !GetAtt EmployeePipeRole.Arn
+      Source: !GetAtt EmployeeTable.StreamArn
+      SourceParameters:
+        FilterCriteria:
+          Filters:
+            - Pattern: '{ "eventName": ["INSERT","MODIFY"] }'
+        DynamoDBStreamParameters:
+          StartingPosition: LATEST
+          BatchSize: 1
+          DeadLetterConfig:
+            Arn: !GetAtt EmployeePipeDLQueue.Arn
+          MaximumRetryAttempts: 1
+      Enrichment: !GetAtt EmployeeAppStateMachine.Arn
+      Target: !GetAtt EmployeeEventBus.Arn
+      TargetParameters:
+        EventBridgeEventBusParameters:
+          DetailType: "EmployeeDetailsChanged"
+          Source: "employee-app"
+ ##########################################################################
+#  Outputs                                                               #
+##########################################################################
+
